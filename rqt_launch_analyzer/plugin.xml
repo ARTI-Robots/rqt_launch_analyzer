@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<library path="src">
+  <class type="rqt_launch_analyzer.gui.Gui" base_class_type="rqt_gui_py::Plugin">
+    <description>
+      A Python GUI plugin for analyzing launch files.
+    </description>
+    <qtgui>
+      <group>
+        <label>Analysis</label>
+        <icon type="theme">folder</icon>
+        <statustip>Plugins for analyzing your ROS setup</statustip>
+      </group>
+      <label>Launch File Analyzer</label>
+      <icon type="theme">applications-other</icon>
+      <statustip>Tool for analyzing launch files</statustip>
+    </qtgui>
+  </class>
+</library>
