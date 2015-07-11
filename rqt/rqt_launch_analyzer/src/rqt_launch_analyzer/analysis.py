@@ -3,10 +3,11 @@ import re
 import random
 import rospy
 import rospkg
-import xml.etree.ElementTree as ElementTree
+from rospkg.common import ResourceNotFound
+from xml.etree import ElementTree
 
 class LaunchFileParser(object):
-    _SUBST_ARG_RE = r'([^$]+)|\$\(([a-z]+)(\s+\w+)(\s+\w+)?\)'
+    _SUBST_ARG_RE = r'([^$]+)|\$\(([a-z]+)\s+([^\s\)]+)\s*(\w+)?\)'
     _SUBST_ARG_CRE = re.compile(_SUBST_ARG_RE)
     _ATTRIBUTE_CRE = re.compile('^(%s)*$' % _SUBST_ARG_RE)
 
@@ -22,11 +23,11 @@ class LaunchFileParser(object):
         try:
             root_elem = ElementTree.parse(path).getroot()
         except Exception, e:
-            rospy.warn('Launch file %s cannot be read (%s: %s)' % (
+            rospy.logwarn('Launch file %s cannot be read (%s: %s)' % (
                     path, type(e).__name__, e.message))
             return
         if root_elem.tag != 'launch':
-            rospy.warn('Launch file %s: root XML node is not <launch>' % path)
+            rospy.logwarn('Launch file %s: root XML node is not <launch>' % path)
             return
         return self._parse_element(root_elem, parent, sc)
 
@@ -34,8 +35,8 @@ class LaunchFileParser(object):
         e = LaunchElement(parent, xml_elem.tag)
         for name, value in xml_elem.items():
             a = LaunchAttribute(name, value)
+            e.attributes[name] = a
             self._evaluate_attribute(a, sc)
-            e.attributes.append(a)
             if a.name in ('if', 'unless'):
                 if a.evaluated_value in ('true', 1):
                     e.enabled = a.name == 'if'
@@ -44,15 +45,35 @@ class LaunchFileParser(object):
                 else:
                     e.enabled = None # invalid
 
-        child_sc = SubstitutionContext(sc)
-        for xml_child_elem in xml_elem:
-            child = self._parse_element(xml_child_elem, e, child_sc)
-            e.children.append(child)
+        if e.enabled:
+            if e.tag == 'arg' and 'name' in e.attributes:
+                name = e.attributes['name'].evaluated_value
+                if name is not None:
+                    if 'value' in e.attributes:
+                        sc.set_arg(name, e.attributes['value'].evaluated_value)
+                    elif sc.get_arg(name) is None and 'default' in e.attributes:
+                        sc.set_arg(name, e.attributes['default'].evaluated_value)
+            elif e.tag == 'env' and 'name' in e.attributes and 'value' in e.attributes:
+                name = e.attributes['name'].evaluated_value
+                value = e.attributes['value'].evaluated_value
+                if name is not None and value is not None:
+                    sc.set_env(name, value)
+
+            child_sc = SubstitutionContext(sc)
+            for xml_child_elem in xml_elem:
+                child = self._parse_element(xml_child_elem, e, child_sc)
+                e.children.append(child)
+
+            if e.tag == 'include' and 'file' in e.attributes:
+                file = e.attributes['file'].evaluated_value
+                if file is not None:
+                    child = self._parse_launch_file(file, e, child_sc)
+                    e.children.append(child)
         return e
 
     def _evaluate_attribute(self, attribute, sc):
         if LaunchFileParser._ATTRIBUTE_CRE.match(attribute.raw_value) is None:
-            rospy.warn('Attribute %s does not match RE' % attribute.raw_value)
+            rospy.logwarn('Attribute %s does not match RE' % attribute.raw_value)
         else:
             attribute.evaluated_value = ''
             for match in LaunchFileParser._SUBST_ARG_CRE.finditer(attribute.raw_value):
@@ -77,6 +98,11 @@ class LaunchFileParser(object):
                 sa.evaluated_value = sc.get_anon(sa.key)
             elif sa.tag == 'arg':
                 sa.evaluated_value = sc.get_arg(match.group(3))
+            elif sa.tag == 'find':
+                try:
+                    sa.evaluated_value = self._rospack.get_path(sa.key)
+                except ResourceNotFound:
+                    pass
         return sa
 
 
@@ -86,7 +112,7 @@ class LaunchElement(object):
         self.children = []
         self.tag = tag
         self.enabled = True
-        self.attributes = []
+        self.attributes = {}
         self.exists = None
 
 
@@ -124,6 +150,12 @@ class SubstitutionContext(object):
             self._env[key] = [None, 1]
             return None
 
+    def set_env(self, key, value):
+        if key in self._env:
+            self._env[key][0] = value
+        else:
+            self._env[key] = [value, 0]
+
     def get_anon(self, key):
         if key in self._anon:
             value = self._anon[key]
@@ -137,13 +169,19 @@ class SubstitutionContext(object):
     def get_arg(self, key):
         if key in self._arg:
             value = self._arg[key]
-            value[1] += 1
-            return value[0]
+        elif self.parent and key in self.parent._arg:
+            value = self.parent._arg[key]
         else:
-            self._arg[key] = [None, 1]
-            return None
+            value = [None, 0]
+            self._arg[key] = value
+        value[1] += 1
+        return value[0]
 
-
+    def set_arg(self, key, value):
+        if key in self._arg:
+            self._arg[key][0] = value
+        else:
+            self._arg[key] = [value, 0]
 
 
 
