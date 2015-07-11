@@ -4,8 +4,8 @@ import rospkg
 
 from qt_gui.plugin import Plugin
 from python_qt_binding import loadUi
-from python_qt_binding.QtCore import (QAbstractItemModel, QModelIndex, Qt)
-from python_qt_binding.QtGui import (QWidget, QIcon, QFont, QBrush, QColor)
+from python_qt_binding.QtCore import (QAbstractItemModel, QModelIndex, QUrl, Qt)
+from python_qt_binding.QtGui import (QDesktopServices, QWidget, QIcon, QFont, QBrush, QColor)
 
 from .analysis import LaunchFileParser
 
@@ -18,13 +18,20 @@ class Gui(Plugin):
         super(Gui, self).__init__(context)
         self.setObjectName(PACKAGE_NAME)
 
+        self._parser = LaunchFileParser()
+        self._current_package_name = None
+        self._current_launch_file_name = None
+
         self._widget = QWidget()
         ui_file = os.path.join(rospkg.RosPack().get_path(PACKAGE_NAME), 'resource', 'launch_analyzer.ui')
         loadUi(ui_file, self._widget)
 
         self._widget.refresh_button.setIcon(QIcon.fromTheme('view-refresh'))
         self._widget.refresh_button.pressed.connect(self._refresh)
-        self._widget.actions_label.linkHovered.connect(self._action_link_hovered)
+        self._widget.xml_label.linkHovered.connect(lambda link: self._label_link_hovered(self._widget.xml_label, link))
+        self._widget.xml_label.linkActivated.connect(self._label_link_activated)
+        self._widget.current_file_label.linkHovered.connect(
+            lambda link: self._label_link_hovered(self._widget.current_file_label, link))
 
         context.add_widget(self._widget)
 
@@ -37,46 +44,100 @@ class Gui(Plugin):
         self._widget.launch_file_edit.setText(instance_settings.value('launch_file_edit_text', ''))
 
     def _refresh(self):
-        parser = LaunchFileParser()
-        root_elem, sc = parser.parse(self._widget.package_edit.text(), self._widget.launch_file_edit.text())
-        #self._dump_elem(root_elem, '')
+        root_elem = self._parser.parse(self._widget.package_edit.text(), self._widget.launch_file_edit.text(), {}, {})
         self._widget.launch_file_tree_view.setModel(LaunchTreeModel(root_elem))
+        self._current_package_name = self._widget.package_edit.text()
+        self._current_launch_file_name = self._widget.launch_file_edit.text()
         # Connect selection model signal. The selection model is recreated on tree.setModel(), so we have to do that
         # here:
         self._widget.launch_file_tree_view.selectionModel().currentChanged.connect(self._current_tree_item_changed)
 
     def _current_tree_item_changed(self, current, previous):
-        if current.isValid():
-            item = current.internalPointer()
-            self._widget.xml_label.setText(item.get_xml())
-            actions = []
-            if item.elem.tag == 'include' and 'file' in item.elem.attributes:
-                a = item.elem.attributes['file']
-                for p in a.parts:
-                    if p.tag == 'find' and p.evaluated_value is not None:
-                        actions.append('<a href="%s">Package</a>' % p.evaluated_value)
-                        break
-                if a.evaluated_value is not None:
-                    actions.append('<a href="%s">File</a>' % a.evaluated_value)
-            self._widget.actions_label.setText(' '.join(actions))
+        item = current.internalPointer() if current.isValid() else None
+        self._update_xml_label(item)
+        self._update_current_file_label(item)
 
-    def _action_link_hovered(self, link):
-        self._widget.actions_label.setToolTip(link)
+    def _update_xml_label(self, item):
+        if item is None:
+            self._widget.xml_label.setText('')
+            return
 
-    def _dump_elem(self, elem, indentation):
-        attrs = ''
-        for attr in elem.attributes:
-            attrs += ' %s="%s"' % (attr.name, attr.evaluated_value)
-        print '%s<%s%s>' % (indentation, elem.tag, attrs)
-        for child in elem.children:
-            self._dump_elem(child, indentation + '  ')
+        # Rebuild XML tag, inserting links for interesting parts:
+        xml = '&lt;%s' % item.elem.tag
+        for a in item.elem.attributes.itervalues():
+            if a.name == 'pkg': # simple heuristics
+                path = self._parser.get_package_path(a.evaluated_value) if a.evaluated_value is not None else None
+                xml += ' ' + self._make_link(a.name, path, True)
+            elif a.name == 'file': # simple heuristics
+                xml += ' ' + self._make_link(a.name, a.evaluated_value, True)
+            else:
+                xml += ' ' + Qt.escape(a.name)
+
+            xml += '="'
+            for p in a.parts:
+                if p.tag is not None:
+                    xml += self._make_link(p.raw_value, p.evaluated_value, p.tag == 'find')
+                else:
+                    xml += Qt.escape(p.raw_value)
+            xml += '"'
+        self._widget.xml_label.setText("%s&gt;" % xml)
+
+    def _make_link(self, raw_value, evaluated_value, is_path):
+        if evaluated_value is None:
+            return '<a href="#" style="color:red;text-decoration:none">%s</a>' % Qt.escape(raw_value)
+        elif is_path:
+            return '<a href="%s">%s</a>' % (Qt.escape(evaluated_value), Qt.escape(raw_value))
+        else:
+            return '<a href="#%s" style="color:darkgreen;text-decoration:none">%s</a>' % (Qt.escape(evaluated_value), Qt.escape(raw_value))
+
+    def _update_current_file_label(self, item):
+        if item is None:
+            self._widget.current_file_label.setText('')
+            return
+
+        package_name = None
+        launch_file_name = None
+        # Find containing <launch>:
+        while item.elem is not None and item.elem.tag != 'launch':
+            item = item.parent
+        # Find containing <include>:
+        while item.elem is not None and item.elem.tag != 'include':
+            item = item.parent
+        if item.elem is None: # Topmost <launch>
+            package_name = self._current_package_name
+            launch_file_name = '/launch/' + self._current_launch_file_name
+        elif 'file' in item.elem.attributes:
+            a = item.elem.attributes['file']
+            if len(a.parts) > 0 and a.parts[0].tag == 'find': # Normal file parameter structure, woo-hoo
+                package_name = a.parts[0].key
+                launch_file_name = ''
+                for j in xrange(1, len(a.parts)):
+                    launch_file_name += a.parts[j].evaluated_value
+
+        package_path = self._parser.get_package_path(package_name)
+        if package_path is not None and launch_file_name is not None:
+            self._widget.current_file_label.setText(
+                'Current launch file: <a href="%s">%s</a> in package <a href="%s">%s</a>' % (
+                    package_path + launch_file_name, launch_file_name, package_path, package_name))
+        else:
+            self._widget.current_file_label.setText('')
+
+    def _label_link_hovered(self, label, link):
+        if link.startswith('#'):
+            link = link[1:]
+            label.unsetCursor()
+        label.setToolTip(link)
+
+    def _label_link_activated(self, link):
+        if not link.startswith('#'):
+            QDesktopServices.openUrl(QUrl(link))
 
 
 class LaunchTreeModel(QAbstractItemModel):
     _icon_cache = {}
 
     def __init__(self, root_elem):
-        super(QAbstractItemModel, self).__init__()
+        super(LaunchTreeModel, self).__init__()
         self.root_elem = root_elem
         self._build()
 
@@ -174,21 +235,17 @@ class LaunchTreeItem(object):
         if elem is not None:
             self.icon = LaunchTreeItem._ICONS[elem.tag if elem.tag in LaunchTreeItem._ICONS else 'DEFAULT']
             self.state = LaunchTreeItemState.OK if elem.enabled else LaunchTreeItemState.DISABLED
-            for a in elem.attributes.itervalues():
-                if a.evaluated_value is None:
-                    self.state = LaunchTreeItemState.ERROR
+            if elem.exists is False:
+                self.state = LaunchTreeItemState.ERROR
+            else:
+                for a in elem.attributes.itervalues():
+                    if a.evaluated_value is None:
+                        self.state = LaunchTreeItemState.ERROR
             self._init_title()
         else:
             self.icon = LaunchTreeItem._ICONS['DEFAULT']
             self.state = LaunchTreeItemState.OK
             self.title = ''
-
-    def get_xml(self):
-        # Rebuild XML tag:
-        xml = '<%s' % self.elem.tag
-        for a in self.elem.attributes.itervalues():
-            xml += ' %s="%s"' % (a.name, a.raw_value)
-        return "%s>" % xml
 
     def get_tool_tip(self):
         return None
@@ -225,6 +282,13 @@ class LaunchTreeItem(object):
             self.title += ' %s = %s' % (self._format_attribute('name'), self._format_attribute('value'))
         elif self.elem.tag == 'remap':
             self.title += u' %s \u2192 %s' % (self._format_attribute('from'), self._format_attribute('to'))
+        elif self.elem.tag == 'rosparam':
+            if 'command' in self.elem.attributes:
+                self.title += ' %s' % self._format_attribute('command')
+            if 'file' in self.elem.attributes:
+                self.title += ' %s' % self._format_attribute('file')
+        elif self.elem.exists is False:
+            self.title += ' [does not exist]'
 
     def _format_attribute(self, name):
         if name in self.elem.attributes:
