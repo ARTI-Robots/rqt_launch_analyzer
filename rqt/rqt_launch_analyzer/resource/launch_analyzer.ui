@@ -18,14 +18,14 @@
     <layout class="QHBoxLayout" name="edit_layout">
      <item>
       <widget class="QLineEdit" name="package_edit">
-       <property name="toolTip">
+       <property name="placeholderText">
         <string>Name of package</string>
        </property>
       </widget>
      </item>
      <item>
       <widget class="QLineEdit" name="launch_file_edit">
-       <property name="toolTip">
+       <property name="placeholderText">
         <string>Name of launch file</string>
        </property>
       </widget>

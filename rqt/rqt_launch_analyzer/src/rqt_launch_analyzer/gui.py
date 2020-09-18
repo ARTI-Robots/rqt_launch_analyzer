@@ -1,3 +1,4 @@
+import cgi
 import os
 import rospy
 import rospkg
@@ -5,7 +6,8 @@ import rospkg
 from qt_gui.plugin import Plugin
 from python_qt_binding import loadUi
 from python_qt_binding.QtCore import (QAbstractItemModel, QModelIndex, QUrl, Qt)
-from python_qt_binding.QtGui import (QDesktopServices, QWidget, QIcon, QFont, QBrush, QColor)
+from python_qt_binding.QtGui import (QDesktopServices, QIcon, QFont, QBrush, QColor)
+from python_qt_binding.QtWidgets import QWidget
 
 from .analysis import LaunchFileParser
 
@@ -71,24 +73,25 @@ class Gui(Plugin):
             elif a.name == 'file': # simple heuristics
                 xml += ' ' + self._make_link(a.name, a.evaluated_value, True)
             else:
-                xml += ' ' + Qt.escape(a.name)
+                xml += ' ' + cgi.escape(a.name, quote=True)
 
             xml += '="'
             for p in a.parts:
                 if p.tag is not None:
                     xml += self._make_link(p.raw_value, p.evaluated_value, p.tag == 'find')
                 else:
-                    xml += Qt.escape(p.raw_value)
+                    xml += cgi.escape(p.raw_value, quote=True)
             xml += '"'
         self._widget.xml_label.setText("%s&gt;" % xml)
 
     def _make_link(self, raw_value, evaluated_value, is_path):
         if evaluated_value is None:
-            return '<a href="#" style="color:red;text-decoration:none">%s</a>' % Qt.escape(raw_value)
+            return '<a href="#" style="color:red;text-decoration:none">%s</a>' % cgi.escape(raw_value, quote=True)
         elif is_path:
-            return '<a href="%s">%s</a>' % (Qt.escape(evaluated_value), Qt.escape(raw_value))
+            return '<a href="%s">%s</a>' % (cgi.escape(evaluated_value, quote=True), cgi.escape(raw_value, quote=True))
         else:
-            return '<a href="#%s" style="color:darkgreen;text-decoration:none">%s</a>' % (Qt.escape(evaluated_value), Qt.escape(raw_value))
+            return ('<a href="#%s" style="color:darkgreen;text-decoration:none">%s</a>'
+                    % (cgi.escape(evaluated_value, quote=True), cgi.escape(raw_value, quote=True)))
 
     def _update_current_file_label(self, item):
         if item is None:
