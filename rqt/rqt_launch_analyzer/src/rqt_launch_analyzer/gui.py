@@ -8,9 +8,9 @@ from python_qt_binding import loadUi
 from python_qt_binding.QtCore import (QAbstractItemModel, QModelIndex, QUrl, Qt)
 from python_qt_binding.QtGui import (QDesktopServices, QIcon, QFont, QBrush, QColor)
 from python_qt_binding.QtWidgets import QWidget
+from PyQt5.QtWidgets import QComboBox
 
 from .analysis import LaunchFileParser
-
 
 PACKAGE_NAME = 'rqt_launch_analyzer'
 
@@ -25,8 +25,14 @@ class Gui(Plugin):
         self._current_launch_file_name = None
 
         self._widget = QWidget()
-        ui_file = os.path.join(rospkg.RosPack().get_path(PACKAGE_NAME), 'resource', 'launch_analyzer.ui')
+        ui_file = os.path.join(rospkg.RosPack.get_instance().get_path(PACKAGE_NAME), 'resource', 'launch_analyzer.ui')
         loadUi(ui_file, self._widget)
+
+        self._widget.package_combo_box.lineEdit().setPlaceholderText(self._widget.package_combo_box.toolTip())
+        self._widget.package_combo_box.addItems(sorted(rospkg.RosPack.get_instance().list()))
+        self._widget.package_combo_box.currentTextChanged.connect(self._package_changed)
+
+        self._widget.launch_file_combo_box.lineEdit().setPlaceholderText(self._widget.launch_file_combo_box.toolTip())
 
         self._widget.refresh_button.setIcon(QIcon.fromTheme('view-refresh'))
         self._widget.refresh_button.pressed.connect(self._refresh)
@@ -38,21 +44,49 @@ class Gui(Plugin):
         context.add_widget(self._widget)
 
     def save_settings(self, plugin_settings, instance_settings):
-        instance_settings.set_value('package_edit_text', self._widget.package_edit.text())
-        instance_settings.set_value('launch_file_edit_text', self._widget.launch_file_edit.text())
+        instance_settings.set_value('package_edit_text', self._widget.package_combo_box.currentText())
+        instance_settings.set_value('launch_file_edit_text', self._widget.launch_file_combo_box.currentText())
 
     def restore_settings(self, plugin_settings, instance_settings):
-        self._widget.package_edit.setText(instance_settings.value('package_edit_text', ''))
-        self._widget.launch_file_edit.setText(instance_settings.value('launch_file_edit_text', ''))
+        self._widget.package_combo_box.setCurrentText(instance_settings.value('package_edit_text', ''))
+        self._widget.launch_file_combo_box.setCurrentText(instance_settings.value('launch_file_edit_text', ''))
+
+    def _package_changed(self, package_name):
+        self._widget.launch_file_combo_box.clear()
+        try:
+            package_path = rospkg.RosPack.get_instance().get_path(package_name)
+        except rospkg.ResourceNotFound:
+            # Package not found (can happen when entering a package name manually).
+            pass
+        else:
+            launch_files = []
+            for dir_path, _dir_names, filenames in os.walk(package_path, followlinks=True):
+                if dir_path.startswith(package_path):
+                    dir_path = os.path.relpath(dir_path, package_path)
+                for filename in filenames:
+                    if filename.endswith('.launch'):
+                        launch_files.append(os.path.join(dir_path, filename))
+            launch_files.sort()
+            self._widget.launch_file_combo_box.addItems(launch_files)
 
     def _refresh(self):
-        root_elem = self._parser.parse(self._widget.package_edit.text(), self._widget.launch_file_edit.text(), {}, {})
-        self._widget.launch_file_tree_view.setModel(LaunchTreeModel(root_elem))
-        self._current_package_name = self._widget.package_edit.text()
-        self._current_launch_file_name = self._widget.launch_file_edit.text()
-        # Connect selection model signal. The selection model is recreated on tree.setModel(), so we have to do that
-        # here:
-        self._widget.launch_file_tree_view.selectionModel().currentChanged.connect(self._current_tree_item_changed)
+        self._widget.launch_file_tree_view.setModel(None)
+        try:
+            package_path = rospkg.RosPack.get_instance().get_path(self._widget.package_combo_box.currentText())
+        except rospkg.ResourceNotFound:
+            # Package not found (can happen when entering a package name manually).
+            pass
+        else:
+            launch_file_path = os.path.join(package_path, self._widget.launch_file_combo_box.currentText())
+            if os.path.isfile(launch_file_path):
+                root_elem = self._parser.parse(launch_file_path, {}, {})
+                self._widget.launch_file_tree_view.setModel(LaunchTreeModel(root_elem))
+                self._current_package_name = self._widget.package_combo_box.currentText()
+                self._current_launch_file_name = self._widget.launch_file_combo_box.currentText()
+                # Connect selection model signal. The selection model is recreated on tree.setModel(), so we have to
+                # do that here:
+                self._widget.launch_file_tree_view.selectionModel().currentChanged.connect(
+                    self._current_tree_item_changed)
 
     def _current_tree_item_changed(self, current, previous):
         item = current.internalPointer() if current.isValid() else None
@@ -67,26 +101,27 @@ class Gui(Plugin):
         # Rebuild XML tag, inserting links for interesting parts:
         xml = '&lt;%s' % item.elem.tag
         for a in item.elem.attributes.itervalues():
-            if a.name == 'pkg': # simple heuristics
+            if a.name == 'pkg':  # simple heuristics
                 path = self._parser.get_package_path(a.evaluated_value) if a.evaluated_value is not None else None
-                xml += ' ' + self._make_link(a.name, path, True)
-            elif a.name == 'file': # simple heuristics
-                xml += ' ' + self._make_link(a.name, a.evaluated_value, True)
+                xml += ' ' + self._make_link(a.name, path, 'Not found', True)
+            elif a.name == 'file':  # simple heuristics
+                xml += ' ' + self._make_link(a.name, a.evaluated_value, None, True)
             else:
                 xml += ' ' + cgi.escape(a.name, quote=True)
 
             xml += '="'
             for p in a.parts:
                 if p.tag is not None:
-                    xml += self._make_link(p.raw_value, p.evaluated_value, p.tag == 'find')
+                    xml += self._make_link(p.raw_value, p.evaluated_value, p.error_message, p.tag == 'find')
                 else:
                     xml += cgi.escape(p.raw_value, quote=True)
             xml += '"'
         self._widget.xml_label.setText("%s&gt;" % xml)
 
-    def _make_link(self, raw_value, evaluated_value, is_path):
+    def _make_link(self, raw_value, evaluated_value, error_message, is_path):
         if evaluated_value is None:
-            return '<a href="#" style="color:red;text-decoration:none">%s</a>' % cgi.escape(raw_value, quote=True)
+            return ('<a href="#%s" style="color:red;text-decoration:none">%s</a>'
+                    % (cgi.escape(error_message or '', quote=True), cgi.escape(raw_value, quote=True)))
         elif is_path:
             return '<a href="%s">%s</a>' % (cgi.escape(evaluated_value, quote=True), cgi.escape(raw_value, quote=True))
         else:
@@ -106,12 +141,12 @@ class Gui(Plugin):
         # Find containing <include>:
         while item.elem is not None and item.elem.tag != 'include':
             item = item.parent
-        if item.elem is None: # Topmost <launch>
+        if item.elem is None:  # Topmost <launch>
             package_name = self._current_package_name
             launch_file_name = '/launch/' + self._current_launch_file_name
         elif 'file' in item.elem.attributes:
             a = item.elem.attributes['file']
-            if len(a.parts) > 0 and a.parts[0].tag == 'find': # Normal file parameter structure, woo-hoo
+            if len(a.parts) > 0 and a.parts[0].tag == 'find':  # Normal file parameter structure, woo-hoo
                 package_name = a.parts[0].key
                 launch_file_name = ''
                 for j in xrange(1, len(a.parts)):
@@ -219,7 +254,7 @@ class LaunchTreeItem(object):
         LaunchTreeItemState.OK: None,
         LaunchTreeItemState.ERROR: None,
         LaunchTreeItemState.CHILD_ERROR: None,
-        LaunchTreeItemState.DISABLED: None #_make_disabled_font()
+        LaunchTreeItemState.DISABLED: None  # _make_disabled_font()
     }
 
     _FOREGROUNDS = {
@@ -237,7 +272,12 @@ class LaunchTreeItem(object):
 
         if elem is not None:
             self.icon = LaunchTreeItem._ICONS[elem.tag if elem.tag in LaunchTreeItem._ICONS else 'DEFAULT']
-            self.state = LaunchTreeItemState.OK if elem.enabled else LaunchTreeItemState.DISABLED
+            if elem.enabled is True:
+                self.state = LaunchTreeItemState.OK
+            elif elem.enabled is False:
+                self.state = LaunchTreeItemState.DISABLED
+            else:
+                self.state = LaunchTreeItemState.ERROR
             if elem.exists is False:
                 self.state = LaunchTreeItemState.ERROR
             else:

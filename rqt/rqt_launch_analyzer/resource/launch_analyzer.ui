@@ -17,16 +17,40 @@
    <item>
     <layout class="QHBoxLayout" name="edit_layout">
      <item>
-      <widget class="QLineEdit" name="package_edit">
-       <property name="placeholderText">
+      <widget class="QComboBox" name="package_combo_box">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="toolTip">
         <string>Name of package</string>
+       </property>
+       <property name="editable">
+        <bool>true</bool>
+       </property>
+       <property name="maxVisibleItems">
+        <number>30</number>
        </property>
       </widget>
      </item>
      <item>
-      <widget class="QLineEdit" name="launch_file_edit">
-       <property name="placeholderText">
+      <widget class="QComboBox" name="launch_file_combo_box">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="toolTip">
         <string>Name of launch file</string>
+       </property>
+       <property name="editable">
+        <bool>true</bool>
+       </property>
+       <property name="maxVisibleItems">
+        <number>30</number>
        </property>
       </widget>
      </item>

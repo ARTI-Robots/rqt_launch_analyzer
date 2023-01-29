@@ -46,6 +46,7 @@ qtcreator-*
 # Catkin custom files
 CATKIN_IGNORE
 
-# PyCharm
+# PyCharm/CLion
 .idea/
+cmake-build-debug/
 

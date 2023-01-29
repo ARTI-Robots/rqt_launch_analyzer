@@ -6,17 +6,16 @@ import rospkg
 from rospkg.common import ResourceNotFound
 from xml.etree import ElementTree
 
+
 class LaunchFileParser(object):
     _SUBST_ARG_RE = r'([^$]+)|\$\(([a-z]+)\s+([^\s\)]+)\s*(\w+)?\)'
     _SUBST_ARG_CRE = re.compile(_SUBST_ARG_RE)
-    _ATTRIBUTE_CRE = re.compile('^(%s)*$' % _SUBST_ARG_RE)
+    _ATTRIBUTE_CRE = re.compile(r'^((%s)*|\$\(eval\s+.*\))$' % _SUBST_ARG_RE)
 
     def __init__(self):
         self._rospack = rospkg.RosPack()
 
-    def parse(self, package_name, launch_file_name, external_args, external_envs):
-        package_path = self.get_package_path(package_name)
-        launch_file_path = os.path.join(package_path, 'launch', launch_file_name) if package_path is not None else None
+    def parse(self, launch_file_path, external_args, external_envs):
         return self._parse_launch_file(launch_file_path, None, external_args, external_envs)
 
     def get_package_path(self, package_name):
@@ -44,13 +43,12 @@ class LaunchFileParser(object):
             a = LaunchAttribute(name, value)
             e.attributes[name] = a
             self._evaluate_attribute(a, e.parent)
-            if a.name in ('if', 'unless'):
-                if a.evaluated_value in ('true', 1):
-                    e.enabled = a.name == 'if'
-                elif a.evaluated_value in ('false', 0):
-                    e.enabled = a.name == 'unless'
-                else:
-                    e.enabled = None # invalid
+            if a.name == 'if':
+                e.enabled = self._parse_bool(a.evaluated_value)
+            elif a.name == 'unless':
+                e.enabled = self._parse_bool(a.evaluated_value)
+                if e.enabled is not None:
+                    e.enabled = not e.enabled
 
         if e.enabled:
             if e.tag == 'arg' and 'name' in e.attributes:
@@ -79,9 +77,23 @@ class LaunchFileParser(object):
                     child = self._parse_launch_file(file, e, {}, {})
                     e.children.append(child)
 
+    @staticmethod
+    def _parse_bool(value):
+        if value is not None:
+            value = value.upper()
+            if value in ('TRUE', '1'):
+                return True
+            elif value in ('FALSE', '0'):
+                return False
+        return None
+
     def _evaluate_attribute(self, attribute, parent):
         if LaunchFileParser._ATTRIBUTE_CRE.match(attribute.raw_value) is None:
-            rospy.logwarn('Attribute %s does not match RE' % attribute.raw_value)
+            rospy.logwarn('Attribute "%s" does not match RE' % attribute.raw_value)
+        elif attribute.raw_value.startswith('$(eval'):
+            sa = self._evaluate_expression(attribute.raw_value, parent)
+            attribute.parts.append(sa)
+            attribute.evaluated_value = sa.evaluated_value
         else:
             attribute.evaluated_value = ''
             for match in LaunchFileParser._SUBST_ARG_CRE.finditer(attribute.raw_value):
@@ -93,7 +105,7 @@ class LaunchFileParser(object):
                     attribute.evaluated_value += sa.evaluated_value
 
     def _evaluate_match(self, match, parent):
-        if match.group(1): # plain text
+        if match.group(1):  # plain text
             sa = SubstitutionArg(None, None, match.group(0), match.group(0))
         else:
             sa = SubstitutionArg(match.group(2), match.group(3), match.group(0), None)
@@ -105,14 +117,24 @@ class LaunchFileParser(object):
             elif sa.tag == 'anon':
                 sa.evaluated_value = parent.get_anon(sa.key)
             elif sa.tag == 'arg':
-                sa.evaluated_value = parent.get_arg(match.group(3))
+                sa.evaluated_value = parent.get_arg(sa.key)
+                if sa.evaluated_value is None:
+                    sa.error_message = 'No arg named "%s"' % sa.key
             elif sa.tag == 'find':
-                #if random.randint(0, 100) == 0:
-                #    sa.key += "xxx" # TODO just for testing!!!
                 try:
                     sa.evaluated_value = self.get_package_path(sa.key)
-                except ResourceNotFound:
-                    pass
+                except ResourceNotFound as e:
+                    sa.error_message = str(e)
+        return sa
+
+    @staticmethod
+    def _evaluate_expression(raw_value, parent):
+        expression = raw_value[7:-1]
+        sa = SubstitutionArg('eval', expression, raw_value, None)
+        try:
+            sa.evaluated_value = parent.eval_expression(expression)
+        except Exception as e:
+            sa.error_message = str(e)
         return sa
 
 
@@ -146,6 +168,11 @@ class LaunchElement(object):
             return self._args[key]
         return self.parent.get_arg(key)
 
+    def get_args(self):
+        args = dict(self.parent.get_args())
+        args.update(self._args)
+        return args
+
     def set_arg(self, key, value):
         self._args[key] = value
 
@@ -160,9 +187,15 @@ class LaunchElement(object):
             self._args[key] = value if value is not None else default_value
         return self._args[key]
 
+    def eval_expression(self, expression):
+        eval_globals = {'arg': self.get_arg, 'env': self.get_env}
+        eval_globals.update(self.get_args())
+        return str(eval(expression, eval_globals, {}))
+
 
 class RootLaunchElement(LaunchElement):
     """LaunchElement corresponding to the <launch> tag"""
+
     def __init__(self, parent, external_args, external_envs):
         super(RootLaunchElement, self).__init__(parent)
         self.external_args = external_args
@@ -189,6 +222,9 @@ class RootLaunchElement(LaunchElement):
         if key in self._args:
             return self._args[key]
         return None
+
+    def get_args(self):
+        return dict(self._args)
 
     def get_passed_arg(self, key):
         if key in self._args:
@@ -217,3 +253,4 @@ class SubstitutionArg(object):
         self.key = key
         self.raw_value = raw_value
         self.evaluated_value = evaluated_value
+        self.error_message = None
