@@ -15,27 +15,8 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
-    <layout class="QHBoxLayout" name="edit_layout">
-     <item>
-      <widget class="QComboBox" name="package_combo_box">
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
-       </property>
-       <property name="toolTip">
-        <string>Name of package</string>
-       </property>
-       <property name="editable">
-        <bool>true</bool>
-       </property>
-       <property name="maxVisibleItems">
-        <number>30</number>
-       </property>
-      </widget>
-     </item>
-     <item>
+    <layout class="QGridLayout" name="edit_layout">
+     <item row="0" column="1">
       <widget class="QComboBox" name="launch_file_combo_box">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
@@ -54,8 +35,47 @@
        </property>
       </widget>
      </item>
-     <item>
+     <item row="0" column="0">
+      <widget class="QComboBox" name="package_combo_box">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="toolTip">
+        <string>Name of package</string>
+       </property>
+       <property name="editable">
+        <bool>true</bool>
+       </property>
+       <property name="maxVisibleItems">
+        <number>30</number>
+       </property>
+      </widget>
+     </item>
+     <item row="1" column="0">
+      <widget class="QLineEdit" name="arg_edit">
+       <property name="placeholderText">
+        <string>Arguments, e.g. rviz:=true control_rate:=20</string>
+       </property>
+      </widget>
+     </item>
+     <item row="1" column="1">
+      <widget class="QLineEdit" name="env_edit">
+       <property name="placeholderText">
+        <string>Environment variables, e.g. ROS_VERSION=1 ROS_DISTRO=kinetic</string>
+       </property>
+      </widget>
+     </item>
+     <item row="0" column="2" rowspan="2">
       <widget class="QPushButton" name="refresh_button">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Minimum" vsizetype="Minimum">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
        <property name="toolTip">
         <string>Analyze launch file</string>
        </property>
@@ -64,8 +84,10 @@
        </property>
        <property name="icon">
         <iconset theme="view-refresh">
-         <normaloff/>
-        </iconset>
+         <normaloff>.</normaloff>.</iconset>
+       </property>
+       <property name="autoDefault">
+        <bool>true</bool>
        </property>
        <property name="default">
         <bool>true</bool>
@@ -125,6 +147,14 @@
    </item>
   </layout>
  </widget>
+ <tabstops>
+  <tabstop>package_combo_box</tabstop>
+  <tabstop>launch_file_combo_box</tabstop>
+  <tabstop>arg_edit</tabstop>
+  <tabstop>env_edit</tabstop>
+  <tabstop>refresh_button</tabstop>
+  <tabstop>launch_file_tree_view</tabstop>
+ </tabstops>
  <resources/>
  <connections/>
 </ui>

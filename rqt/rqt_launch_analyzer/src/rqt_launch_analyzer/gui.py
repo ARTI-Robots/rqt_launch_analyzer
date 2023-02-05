@@ -1,14 +1,19 @@
-import cgi
 import os
+import re
 import rospy
 import rospkg
 
+try:
+    from html import escape
+except ImportError:
+    # Try earlier version:
+    from cgi import escape
+
 from qt_gui.plugin import Plugin
 from python_qt_binding import loadUi
-from python_qt_binding.QtCore import (QAbstractItemModel, QModelIndex, QUrl, Qt)
-from python_qt_binding.QtGui import (QDesktopServices, QIcon, QFont, QBrush, QColor)
+from python_qt_binding.QtCore import (QAbstractItemModel, QModelIndex, QRegExp, QUrl, Qt)
+from python_qt_binding.QtGui import (QDesktopServices, QIcon, QFont, QBrush, QColor, QRegExpValidator)
 from python_qt_binding.QtWidgets import QWidget
-from PyQt5.QtWidgets import QComboBox
 
 from .analysis import LaunchFileParser
 
@@ -16,6 +21,9 @@ PACKAGE_NAME = 'rqt_launch_analyzer'
 
 
 class Gui(Plugin):
+    _ARG_ENV_RE = '(\\w+)\\s*:?=\\s*(\\S+)\\s*'
+    _ARG_ENV_CRE = re.compile(_ARG_ENV_RE)
+
     def __init__(self, context):
         super(Gui, self).__init__(context)
         self.setObjectName(PACKAGE_NAME)
@@ -34,6 +42,10 @@ class Gui(Plugin):
 
         self._widget.launch_file_combo_box.lineEdit().setPlaceholderText(self._widget.launch_file_combo_box.toolTip())
 
+        self._arg_env_re_validator = QRegExpValidator(QRegExp('\\s*({})*'.format(self._ARG_ENV_RE)), self._widget)
+        self._widget.arg_edit.setValidator(self._arg_env_re_validator)
+        self._widget.env_edit.setValidator(self._arg_env_re_validator)
+
         self._widget.refresh_button.setIcon(QIcon.fromTheme('view-refresh'))
         self._widget.refresh_button.pressed.connect(self._refresh)
         self._widget.xml_label.linkHovered.connect(lambda link: self._label_link_hovered(self._widget.xml_label, link))
@@ -43,13 +55,17 @@ class Gui(Plugin):
 
         context.add_widget(self._widget)
 
-    def save_settings(self, plugin_settings, instance_settings):
-        instance_settings.set_value('package_edit_text', self._widget.package_combo_box.currentText())
-        instance_settings.set_value('launch_file_edit_text', self._widget.launch_file_combo_box.currentText())
+    def save_settings(self, _plugin_settings, instance_settings):
+        instance_settings.set_value('package_combo_box_text', self._widget.package_combo_box.currentText())
+        instance_settings.set_value('launch_file_combo_box_text', self._widget.launch_file_combo_box.currentText())
+        instance_settings.set_value('arg_edit_text', self._widget.arg_edit.text())
+        instance_settings.set_value('env_edit_text', self._widget.env_edit.text())
 
-    def restore_settings(self, plugin_settings, instance_settings):
-        self._widget.package_combo_box.setCurrentText(instance_settings.value('package_edit_text', ''))
-        self._widget.launch_file_combo_box.setCurrentText(instance_settings.value('launch_file_edit_text', ''))
+    def restore_settings(self, _plugin_settings, instance_settings):
+        self._widget.package_combo_box.setCurrentText(instance_settings.value('package_combo_box_text', ''))
+        self._widget.launch_file_combo_box.setCurrentText(instance_settings.value('launch_file_combo_box_text', ''))
+        self._widget.arg_edit.setText(instance_settings.value('arg_edit_text', ''))
+        self._widget.env_edit.setText(instance_settings.value('env_edit_text', ''))
 
     def _package_changed(self, package_name):
         self._widget.launch_file_combo_box.clear()
@@ -79,8 +95,13 @@ class Gui(Plugin):
         else:
             launch_file_path = os.path.join(package_path, self._widget.launch_file_combo_box.currentText())
             if os.path.isfile(launch_file_path):
-                root_elem = self._parser.parse(launch_file_path, {}, {})
+                args = {match.group(1).strip(): match.group(2).strip()
+                        for match in self._ARG_ENV_CRE.finditer(self._widget.arg_edit.text())}
+                envs = {match.group(1).strip(): match.group(2).strip()
+                        for match in self._ARG_ENV_CRE.finditer(self._widget.env_edit.text())}
+                root_elem = self._parser.parse(launch_file_path, args, envs)
                 self._widget.launch_file_tree_view.setModel(LaunchTreeModel(root_elem))
+                self._widget.launch_file_tree_view.expandAll()
                 self._current_package_name = self._widget.package_combo_box.currentText()
                 self._current_launch_file_name = self._widget.launch_file_combo_box.currentText()
                 # Connect selection model signal. The selection model is recreated on tree.setModel(), so we have to
@@ -100,33 +121,37 @@ class Gui(Plugin):
 
         # Rebuild XML tag, inserting links for interesting parts:
         xml = '&lt;%s' % item.elem.tag
-        for a in item.elem.attributes.itervalues():
+        for a in item.elem.attributes.values():
             if a.name == 'pkg':  # simple heuristics
                 path = self._parser.get_package_path(a.evaluated_value) if a.evaluated_value is not None else None
                 xml += ' ' + self._make_link(a.name, path, 'Not found', True)
             elif a.name == 'file':  # simple heuristics
                 xml += ' ' + self._make_link(a.name, a.evaluated_value, None, True)
             else:
-                xml += ' ' + cgi.escape(a.name, quote=True)
+                xml += ' ' + self._escape_xml(a.name)
 
             xml += '="'
             for p in a.parts:
                 if p.tag is not None:
                     xml += self._make_link(p.raw_value, p.evaluated_value, p.error_message, p.tag == 'find')
                 else:
-                    xml += cgi.escape(p.raw_value, quote=True)
+                    xml += self._escape_xml(p.raw_value)
             xml += '"'
         self._widget.xml_label.setText("%s&gt;" % xml)
 
     def _make_link(self, raw_value, evaluated_value, error_message, is_path):
         if evaluated_value is None:
             return ('<a href="#%s" style="color:red;text-decoration:none">%s</a>'
-                    % (cgi.escape(error_message or '', quote=True), cgi.escape(raw_value, quote=True)))
+                    % (self._escape_xml(error_message or ''), self._escape_xml(raw_value)))
         elif is_path:
-            return '<a href="%s">%s</a>' % (cgi.escape(evaluated_value, quote=True), cgi.escape(raw_value, quote=True))
+            return '<a href="%s">%s</a>' % (self._escape_xml(evaluated_value), self._escape_xml(raw_value))
         else:
             return ('<a href="#%s" style="color:darkgreen;text-decoration:none">%s</a>'
-                    % (cgi.escape(evaluated_value, quote=True), cgi.escape(raw_value, quote=True)))
+                    % (self._escape_xml(evaluated_value), self._escape_xml(raw_value)))
+
+    @staticmethod
+    def _escape_xml(text):
+        return escape(text, quote=True)
 
     def _update_current_file_label(self, item):
         if item is None:
@@ -149,7 +174,7 @@ class Gui(Plugin):
             if len(a.parts) > 0 and a.parts[0].tag == 'find':  # Normal file parameter structure, woo-hoo
                 package_name = a.parts[0].key
                 launch_file_name = ''
-                for j in xrange(1, len(a.parts)):
+                for j in range(1, len(a.parts)):
                     launch_file_name += a.parts[j].evaluated_value
 
         package_path = self._parser.get_package_path(package_name)
@@ -272,18 +297,13 @@ class LaunchTreeItem(object):
 
         if elem is not None:
             self.icon = LaunchTreeItem._ICONS[elem.tag if elem.tag in LaunchTreeItem._ICONS else 'DEFAULT']
-            if elem.enabled is True:
-                self.state = LaunchTreeItemState.OK
-            elif elem.enabled is False:
+            if elem.enabled is False:
                 self.state = LaunchTreeItemState.DISABLED
+            elif elem.enabled is True and elem.exists is not False and all(a.evaluated_value is not None
+                                                                           for a in elem.attributes.values()):
+                self.state = LaunchTreeItemState.OK
             else:
                 self.state = LaunchTreeItemState.ERROR
-            if elem.exists is False:
-                self.state = LaunchTreeItemState.ERROR
-            else:
-                for a in elem.attributes.itervalues():
-                    if a.evaluated_value is None:
-                        self.state = LaunchTreeItemState.ERROR
             self._init_title()
         else:
             self.icon = LaunchTreeItem._ICONS['DEFAULT']
